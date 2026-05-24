@@ -37,7 +37,9 @@ jobs:
           cache: pnpm
 
       - name: Install JS dependencies
-        run: pnpm install
+        run: |
+          pnpm config set dangerouslyAllowAllBuilds true
+          pnpm install
 
       # ── Tauri CLI ─────────────────────────────────────────────────────────
       - name: Install Tauri CLI
