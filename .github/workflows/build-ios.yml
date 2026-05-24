@@ -5,6 +5,9 @@ on:
     branches: [master]
   workflow_dispatch: # allows manual trigger from the Actions tab
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   build:
     runs-on: macos-latest
@@ -46,38 +49,57 @@ jobs:
         run: cargo install tauri-cli --version "^2" --locked
 
       # ── iOS project init ──────────────────────────────────────────────────
-      # Generates the Xcode project under src-tauri/gen/apple/
       - name: Initialise Tauri iOS project
         run: pnpm tauri ios init
 
-      # ── Disable signing in the Xcode project ──────────────────────────────
-      # Xcode validates the development team at configuration time, before any
-      # build-flag overrides apply. We must patch the project file directly to
-      # switch from Automatic to Manual signing and clear the team requirement.
+      # ── Patch pbxproj for unsigned build ──────────────────────────────────
+      # Tauri does NOT forward -- flags to xcodebuild (confirmed from build logs),
+      # so we must disable signing directly in the project file.
+      # Python is more reliable than sed for this kind of structured text.
       - name: Patch Xcode project for unsigned build
         run: |
           PBXPROJ=$(find src-tauri/gen/apple -name "project.pbxproj" | head -1)
           echo "Patching: $PBXPROJ"
-          sed -i '' 's/CODE_SIGN_STYLE = Automatic;/CODE_SIGN_STYLE = Manual;/g' "$PBXPROJ"
-          sed -i '' 's/DEVELOPMENT_TEAM = [A-Z0-9]*;/DEVELOPMENT_TEAM = "";/g' "$PBXPROJ"
-          echo "Patched signing settings:"
-          grep -E "CODE_SIGN_STYLE|DEVELOPMENT_TEAM" "$PBXPROJ" | sort -u
+
+          python3 - "$PBXPROJ" << 'EOF'
+          import sys, re
+
+          path = sys.argv[1]
+          with open(path) as f:
+              c = f.read()
+
+          replacements = {
+              r'CODE_SIGN_STYLE\s*=\s*\w+\s*;':      'CODE_SIGN_STYLE = Manual;',
+              r'DEVELOPMENT_TEAM\s*=\s*[^;]*;':       'DEVELOPMENT_TEAM = "";',
+              r'CODE_SIGNING_ALLOWED\s*=\s*\w+\s*;':  'CODE_SIGNING_ALLOWED = NO;',
+              r'CODE_SIGNING_REQUIRED\s*=\s*\w+\s*;': 'CODE_SIGNING_REQUIRED = NO;',
+              r'CODE_SIGN_IDENTITY\s*=\s*[^;]*;':     'CODE_SIGN_IDENTITY = "";',
+          }
+
+          for pattern, replacement in replacements.items():
+              c = re.sub(pattern, replacement, c)
+
+          # If CODE_SIGNING_ALLOWED is absent entirely, inject it after CODE_SIGN_STYLE
+          if 'CODE_SIGNING_ALLOWED' not in c:
+              c = c.replace(
+                  'CODE_SIGN_STYLE = Manual;',
+                  'CODE_SIGN_STYLE = Manual;\n\t\t\t\tCODE_SIGNING_ALLOWED = NO;\n\t\t\t\tCODE_SIGNING_REQUIRED = NO;'
+              )
+
+          with open(path, 'w') as f:
+              f.write(c)
+
+          print("Patched. Resulting signing settings:")
+          for line in c.splitlines():
+              if any(k in line for k in ['CODE_SIGN', 'DEVELOPMENT_TEAM']):
+                  print(' ', line.strip())
+          EOF
 
       # ── Build (unsigned) ──────────────────────────────────────────────────
-      # We must go through the Tauri CLI (not xcodebuild directly) because
-      # Tauri's Xcode build phase script expects the CLI to be the orchestrator.
       - name: Build iOS app (unsigned)
-        run: |
-          pnpm tauri ios build --target aarch64 -- \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY="" \
-            CODE_SIGN_STYLE=Manual \
-            DEVELOPMENT_TEAM="" \
-            ONLY_ACTIVE_ARCH=NO
+        run: pnpm tauri ios build --target aarch64
 
       # ── Package into IPA ──────────────────────────────────────────────────
-      # An IPA is just a zip with a specific structure: Payload/<App>.app
       - name: Package .app → .ipa
         run: |
           APP_PATH=$(find src-tauri/gen/apple -name "*.app" | grep -v ".xcarchive" | head -1)
@@ -94,4 +116,4 @@ jobs:
         with:
           name: openwhoop-ios-${{ github.sha }}
           path: openwhoop.ipa
-          retention-days: 30   # free tier keeps artefacts for 30 days
+          retention-days: 30
