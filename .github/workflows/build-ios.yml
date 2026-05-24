@@ -1,0 +1,90 @@
+name: Build iOS IPA
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch: # allows manual trigger from the Actions tab
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── Rust ──────────────────────────────────────────────────────────────
+      - name: Install Rust (stable) with iOS target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+
+      - name: Cache Cargo registry & build artefacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # ── Node / pnpm ───────────────────────────────────────────────────────
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install JS dependencies
+        run: pnpm install
+
+      # ── Tauri CLI ─────────────────────────────────────────────────────────
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2" --locked
+
+      # ── iOS project init ──────────────────────────────────────────────────
+      # Generates the Xcode project under src-tauri/gen/apple/
+      - name: Initialise Tauri iOS project
+        run: pnpm tauri ios init
+
+      # ── Build (unsigned) ──────────────────────────────────────────────────
+      # We skip Apple code-signing entirely; AltStore will re-sign the IPA
+      # with your personal Apple ID when you install it on your phone.
+      - name: Build iOS app (unsigned)
+        run: |
+          WORKSPACE=$(find src-tauri/gen/apple -name "*.xcworkspace" -maxdepth 2 | head -1)
+          SCHEME=$(find src-tauri/gen/apple -name "*.xcscheme" | head -1 | xargs basename | sed 's/\.xcscheme//')
+
+          echo "Workspace : $WORKSPACE"
+          echo "Scheme    : $SCHEME"
+
+          xcodebuild archive \
+            -workspace "$WORKSPACE" \
+            -scheme     "$SCHEME" \
+            -archivePath "$GITHUB_WORKSPACE/build/openwhoop.xcarchive" \
+            -sdk         iphoneos \
+            -configuration Release \
+            ONLY_ACTIVE_ARCH=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY=""
+
+      # ── Package into IPA ──────────────────────────────────────────────────
+      # An IPA is just a zip with a specific structure: Payload/<App>.app
+      - name: Package .app → .ipa
+        run: |
+          mkdir -p Payload
+          cp -r "$GITHUB_WORKSPACE"/build/openwhoop.xcarchive/Products/Applications/*.app Payload/
+          zip -r openwhoop.ipa Payload/
+          rm -rf Payload
+          echo "IPA size: $(du -sh openwhoop.ipa | cut -f1)"
+
+      # ── Upload artefact ───────────────────────────────────────────────────
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: openwhoop-ios-${{ github.sha }}
+          path: openwhoop.ipa
+          retention-days: 30   # free tier keeps artefacts for 30 days
+    
