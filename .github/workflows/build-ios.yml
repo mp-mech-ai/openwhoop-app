@@ -51,33 +51,25 @@ jobs:
         run: pnpm tauri ios init
 
       # ── Build (unsigned) ──────────────────────────────────────────────────
-      # We skip Apple code-signing entirely; AltStore will re-sign the IPA
-      # with your personal Apple ID when you install it on your phone.
+      # We must go through the Tauri CLI (not xcodebuild directly) because
+      # Tauri's Xcode build phase script expects the CLI to be the orchestrator.
+      # Signing flags are forwarded to xcodebuild via the trailing -- args.
       - name: Build iOS app (unsigned)
         run: |
-          WORKSPACE=$(find src-tauri/gen/apple -name "*.xcworkspace" -maxdepth 2 | head -1)
-          SCHEME=$(find src-tauri/gen/apple -name "*.xcscheme" | head -1 | xargs basename | sed 's/\.xcscheme//')
-
-          echo "Workspace : $WORKSPACE"
-          echo "Scheme    : $SCHEME"
-
-          xcodebuild archive \
-            -workspace "$WORKSPACE" \
-            -scheme     "$SCHEME" \
-            -archivePath "$GITHUB_WORKSPACE/build/openwhoop.xcarchive" \
-            -sdk         iphoneos \
-            -configuration Release \
-            ONLY_ACTIVE_ARCH=NO \
+          pnpm tauri ios build --target aarch64-apple-ios -- \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY=""
+            CODE_SIGN_IDENTITY="" \
+            ONLY_ACTIVE_ARCH=NO
 
       # ── Package into IPA ──────────────────────────────────────────────────
       # An IPA is just a zip with a specific structure: Payload/<App>.app
       - name: Package .app → .ipa
         run: |
+          APP_PATH=$(find src-tauri/gen/apple -name "*.app" | grep -v ".xcarchive" | head -1)
+          echo "Found app: $APP_PATH"
           mkdir -p Payload
-          cp -r "$GITHUB_WORKSPACE"/build/openwhoop.xcarchive/Products/Applications/*.app Payload/
+          cp -r "$APP_PATH" Payload/
           zip -r openwhoop.ipa Payload/
           rm -rf Payload
           echo "IPA size: $(du -sh openwhoop.ipa | cut -f1)"
