@@ -52,11 +52,11 @@ jobs:
       - name: Initialise Tauri iOS project
         run: pnpm tauri ios init
 
-      # ── Patch pbxproj for unsigned build ──────────────────────────────────
-      # Tauri does NOT forward -- flags to xcodebuild (confirmed from build logs),
-      # so we must disable signing directly in the project file.
-      # Python is more reliable than sed for this kind of structured text.
-      - name: Patch Xcode project for unsigned build
+      # ── Patch pbxproj ─────────────────────────────────────────────────────
+      # 1. Disable code signing (Tauri does NOT forward -- flags to xcodebuild)
+      # 2. Inject -framework CoreBluetooth into OTHER_LDFLAGS so btleplug
+      #    symbols resolve (Rust #[link] attributes don't propagate to Xcode)
+      - name: Patch Xcode project
         run: |
           PBXPROJ=$(find src-tauri/gen/apple -name "project.pbxproj" | head -1)
           echo "Patching: $PBXPROJ"
@@ -68,30 +68,45 @@ jobs:
           with open(path) as f:
               c = f.read()
 
-          replacements = {
-              r'CODE_SIGN_STYLE\s*=\s*\w+\s*;':      'CODE_SIGN_STYLE = Manual;',
-              r'DEVELOPMENT_TEAM\s*=\s*[^;]*;':       'DEVELOPMENT_TEAM = "";',
-              r'CODE_SIGNING_ALLOWED\s*=\s*\w+\s*;':  'CODE_SIGNING_ALLOWED = NO;',
-              r'CODE_SIGNING_REQUIRED\s*=\s*\w+\s*;': 'CODE_SIGNING_REQUIRED = NO;',
-              r'CODE_SIGN_IDENTITY\s*=\s*[^;]*;':     'CODE_SIGN_IDENTITY = "";',
-          }
+          # ── Signing ──────────────────────────────────────────────────────
+          c = re.sub(r'CODE_SIGN_STYLE\s*=\s*\w+\s*;',      'CODE_SIGN_STYLE = Manual;', c)
+          c = re.sub(r'DEVELOPMENT_TEAM\s*=\s*[^;]*;',       'DEVELOPMENT_TEAM = "";', c)
+          c = re.sub(r'CODE_SIGNING_ALLOWED\s*=\s*\w+\s*;',  'CODE_SIGNING_ALLOWED = NO;', c)
+          c = re.sub(r'CODE_SIGNING_REQUIRED\s*=\s*\w+\s*;', 'CODE_SIGNING_REQUIRED = NO;', c)
+          c = re.sub(r'CODE_SIGN_IDENTITY\s*=\s*[^;]*;',     'CODE_SIGN_IDENTITY = "";', c)
 
-          for pattern, replacement in replacements.items():
-              c = re.sub(pattern, replacement, c)
-
-          # If CODE_SIGNING_ALLOWED is absent entirely, inject it after CODE_SIGN_STYLE
           if 'CODE_SIGNING_ALLOWED' not in c:
               c = c.replace(
                   'CODE_SIGN_STYLE = Manual;',
                   'CODE_SIGN_STYLE = Manual;\n\t\t\t\tCODE_SIGNING_ALLOWED = NO;\n\t\t\t\tCODE_SIGNING_REQUIRED = NO;'
               )
 
+          # ── CoreBluetooth framework ───────────────────────────────────────
+          # btleplug needs CoreBluetooth but Tauri's generated project doesn't
+          # add it automatically; Rust #[link] attrs don't propagate to Xcode.
+          if 'CoreBluetooth' not in c:
+              # Append to existing OTHER_LDFLAGS = "..." lines
+              patched = re.sub(
+                  r'OTHER_LDFLAGS = "([^"]*)"',
+                  r'OTHER_LDFLAGS = "\1 -framework CoreBluetooth"',
+                  c
+              )
+              if patched != c:
+                  c = patched
+              else:
+                  # No OTHER_LDFLAGS at all — inject after each DEVELOPMENT_TEAM line
+                  c = re.sub(
+                      r'(DEVELOPMENT_TEAM = "";)',
+                      r'\1\n\t\t\t\tOTHER_LDFLAGS = "$(inherited) -framework CoreBluetooth";',
+                      c
+                  )
+
           with open(path, 'w') as f:
               f.write(c)
 
-          print("Patched. Resulting signing settings:")
+          print("Patch complete. Relevant settings:")
           for line in c.splitlines():
-              if any(k in line for k in ['CODE_SIGN', 'DEVELOPMENT_TEAM']):
+              if any(k in line for k in ['CODE_SIGN', 'DEVELOPMENT_TEAM', 'OTHER_LDFLAGS', 'CoreBluetooth']):
                   print(' ', line.strip())
           EOF
 
