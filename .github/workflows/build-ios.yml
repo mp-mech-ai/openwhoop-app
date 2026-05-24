@@ -33,7 +33,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: pnpm
 
       - name: Install JS dependencies
@@ -87,4 +87,3 @@ jobs:
           name: openwhoop-ios-${{ github.sha }}
           path: openwhoop.ipa
           retention-days: 30   # free tier keeps artefacts for 30 days
-    
