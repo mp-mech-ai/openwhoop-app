@@ -50,16 +50,30 @@ jobs:
       - name: Initialise Tauri iOS project
         run: pnpm tauri ios init
 
+      # ── Disable signing in the Xcode project ──────────────────────────────
+      # Xcode validates the development team at configuration time, before any
+      # build-flag overrides apply. We must patch the project file directly to
+      # switch from Automatic to Manual signing and clear the team requirement.
+      - name: Patch Xcode project for unsigned build
+        run: |
+          PBXPROJ=$(find src-tauri/gen/apple -name "project.pbxproj" | head -1)
+          echo "Patching: $PBXPROJ"
+          sed -i '' 's/CODE_SIGN_STYLE = Automatic;/CODE_SIGN_STYLE = Manual;/g' "$PBXPROJ"
+          sed -i '' 's/DEVELOPMENT_TEAM = [A-Z0-9]*;/DEVELOPMENT_TEAM = "";/g' "$PBXPROJ"
+          echo "Patched signing settings:"
+          grep -E "CODE_SIGN_STYLE|DEVELOPMENT_TEAM" "$PBXPROJ" | sort -u
+
       # ── Build (unsigned) ──────────────────────────────────────────────────
       # We must go through the Tauri CLI (not xcodebuild directly) because
       # Tauri's Xcode build phase script expects the CLI to be the orchestrator.
-      # Signing flags are forwarded to xcodebuild via the trailing -- args.
       - name: Build iOS app (unsigned)
         run: |
           pnpm tauri ios build --target aarch64 -- \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
+            CODE_SIGN_STYLE=Manual \
+            DEVELOPMENT_TEAM="" \
             ONLY_ACTIVE_ARCH=NO
 
       # ── Package into IPA ──────────────────────────────────────────────────
