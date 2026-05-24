@@ -56,7 +56,7 @@ jobs:
       # Signing flags are forwarded to xcodebuild via the trailing -- args.
       - name: Build iOS app (unsigned)
         run: |
-          pnpm tauri ios build --target aarch64-apple-ios -- \
+          pnpm tauri ios build --target aarch64 -- \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
