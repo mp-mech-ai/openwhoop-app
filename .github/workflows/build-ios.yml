@@ -56,13 +56,13 @@ jobs:
       # 1. Disable code signing (Tauri does NOT forward -- flags to xcodebuild)
       # 2. Inject -framework CoreBluetooth into OTHER_LDFLAGS so btleplug
       #    symbols resolve (Rust #[link] attributes don't propagate to Xcode)
-      - name: Patch Xcode project
+      - name: Patch Xcode project (signing + CoreBluetooth framework)
         run: |
           PBXPROJ=$(find src-tauri/gen/apple -name "project.pbxproj" | head -1)
           echo "Patching: $PBXPROJ"
 
           python3 - "$PBXPROJ" << 'EOF'
-          import sys, re
+          import sys, re, random
 
           path = sys.argv[1]
           with open(path) as f:
@@ -82,31 +82,60 @@ jobs:
               )
 
           # ── CoreBluetooth framework ───────────────────────────────────────
-          # btleplug needs CoreBluetooth but Tauri's generated project doesn't
-          # add it automatically; Rust #[link] attrs don't propagate to Xcode.
-          if 'CoreBluetooth' not in c:
-              # Append to existing OTHER_LDFLAGS = "..." lines
-              patched = re.sub(
-                  r'OTHER_LDFLAGS = "([^"]*)"',
-                  r'OTHER_LDFLAGS = "\1 -framework CoreBluetooth"',
+          # Add it as a proper Xcode framework reference (PBXFileReference +
+          # PBXBuildFile + PBXFrameworksBuildPhase), the same way Xcode does
+          # when you drag a framework in. OTHER_LDFLAGS patching is unreliable
+          # because the Tauri-generated project may use array or missing form.
+          if 'CoreBluetooth.framework' not in c:
+              def gen_id():
+                  return format(random.randint(0, 2**96 - 1), '024X')
+
+              file_ref_id  = gen_id()
+              build_file_id = gen_id()
+
+              # 1. PBXFileReference section
+              new_file_ref = (
+                  f'\t\t{file_ref_id} /* CoreBluetooth.framework */ = '
+                  f'{{isa = PBXFileReference; lastKnownFileType = wrapper.framework; '
+                  f'name = CoreBluetooth.framework; '
+                  f'path = System/Library/Frameworks/CoreBluetooth.framework; '
+                  f'sourceTree = SDKROOT; }};'
+              )
+              c = re.sub(
+                  r'(/\* Begin PBXFileReference section \*/)',
+                  r'\1\n' + new_file_ref,
                   c
               )
-              if patched != c:
-                  c = patched
-              else:
-                  # No OTHER_LDFLAGS at all — inject after each DEVELOPMENT_TEAM line
-                  c = re.sub(
-                      r'(DEVELOPMENT_TEAM = "";)',
-                      r'\1\n\t\t\t\tOTHER_LDFLAGS = "$(inherited) -framework CoreBluetooth";',
-                      c
-                  )
+
+              # 2. PBXBuildFile section
+              new_build_file = (
+                  f'\t\t{build_file_id} /* CoreBluetooth.framework in Frameworks */ = '
+                  f'{{isa = PBXBuildFile; fileRef = {file_ref_id} /* CoreBluetooth.framework */; }};'
+              )
+              c = re.sub(
+                  r'(/\* Begin PBXBuildFile section \*/)',
+                  r'\1\n' + new_build_file,
+                  c
+              )
+
+              # 3. PBXFrameworksBuildPhase — insert into files list
+              c = re.sub(
+                  r'(isa = PBXFrameworksBuildPhase;.*?files = \()',
+                  r'\1\n\t\t\t\t' + build_file_id + r' /* CoreBluetooth.framework in Frameworks */,',
+                  c,
+                  flags=re.DOTALL
+              )
+
+              print(f"CoreBluetooth added: fileRef={file_ref_id}  buildFile={build_file_id}")
+          else:
+              print("CoreBluetooth already present — skipping")
 
           with open(path, 'w') as f:
               f.write(c)
 
-          print("Patch complete. Relevant settings:")
+          print("\nRelevant settings after patch:")
           for line in c.splitlines():
-              if any(k in line for k in ['CODE_SIGN', 'DEVELOPMENT_TEAM', 'OTHER_LDFLAGS', 'CoreBluetooth']):
+              if any(k in line for k in ['CODE_SIGN', 'DEVELOPMENT_TEAM', 'CoreBluetooth']):
                   print(' ', line.strip())
           EOF
 
